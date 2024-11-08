@@ -1,0 +1,405 @@
+---
+title: "MSE226Project1_Classification"
+output: html_document
+date: "2024-11-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# MSE 226 Project part 1 - Classification
+
+## Load data
+
+```{r}
+# Load required libraries
+library(dplyr)
+library(class)
+library(caret)
+library(glm2)
+library(glmnet)
+library(pROC)
+library(randomForest)
+library(ggplot2)
+library(purrr)
+library(broom)
+```
+
+```{r}
+# Load training data (test set was separated into different csv)
+df <- read.csv("~/Downloads/train.csv", header = TRUE, sep = ",", check.names = FALSE)
+```
+
+```{r}
+#View(df)
+```
+
+## Data cleaning
+
+```{r}
+# Store long col names
+long_colnames <- names(df)
+#print(long_colnames)
+```
+
+```{r}
+# Shorten col names
+names(df) <- c(
+  "age",
+  "gender",
+  "transgender",
+  "race_ethnicity",
+  "marital_status",
+  "CRF",
+  "phys_activity_past_week",
+  "sweet_drinks_past_month",
+  "fruit_past_month",
+  "veg_past_month",
+  "tobacco_past_30days",
+  "cigarettes_per_day",
+  "binge_drinking_past_30days",
+  "bmi",
+  "drug_use",
+  "psych_distress_score",
+  "disability_status",
+  "pregnant",
+  "medicare_coverage",
+  "medical_coverage",
+  "insured",
+  "insurance_type_under65",
+  "insurance_type_over65",
+  "zipcode_type",
+  "doctor_visits_past_year",
+  "insurance_months_past_year",
+  "poverty_level_fpl"
+)
+
+#print(names(df))
+
+```
+
+```{r}
+# Convert CRF 'yes'/'no' to 1/0
+df$CRF <- ifelse(df$CRF == "YES", 1, 0)
+
+# combine 'type of insurance' columns (reported in separate columns for <65 and >=65 yrs) and delete original cols
+df$current_insurance_type <- ifelse(
+    df$insurance_type_under65 == 'SKIPPED - AGE >= 65',
+    df$insurance_type_over65, 
+    df$insurance_type_under65)
+df <- df %>% select(-insurance_type_under65, -insurance_type_over65)
+
+# remove continuous outcome variable from df
+df <- df %>% select(-doctor_visits_past_year)
+
+# Convert all categorical predictor variables to factors
+df[] <- lapply(df, function(x) if (is.character(x)) factor(x) else x)
+#str(df) # Check the structure of the dataframe
+
+# Convert outcome to factor
+df$CRF <- factor(df$CRF, levels = c(1,0))
+
+# Specify the binary outcome variable and predictor variables
+outcome <- "CRF"
+# exclude outcome variable from predictors
+predictors <- names(df)[names(df) != "CRF"]
+```
+
+## Assess correlations
+
+```{r}
+
+# Function to create plot and calculate correlation
+plot_and_correlate <- function(predictor, df) {
+  # Remove rows with NA values for the current predictor and outcome
+  df_clean <- df %>% 
+    select(all_of(c(predictor, "CRF"))) %>% 
+    na.omit()
+  
+  if (is.numeric(df_clean[[predictor]])) {
+    # For numeric predictors
+    p <- ggplot(df_clean, aes(x = .data[[predictor]], y = as.numeric(as.character(CRF)))) +
+      geom_point() +
+      geom_smooth(method = "glm", method.args = list(family = "binomial"), se = FALSE) +
+      labs(title = paste("Plot of", predictor, "vs CRF"),
+           x = predictor, y = "CRF (1 = Yes, 0 = No)") + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    # Calculate point-biserial correlation
+    cor_value <- cor(df_clean[[predictor]], as.numeric(as.character(df_clean$CRF)), method = "pearson")
+    cor_metric <- paste("Point-biserial correlation -", predictor, ":", round(cor_value, 3))
+  } else {
+    # For categorical predictors
+    p <- ggplot(df_clean, aes(x = .data[[predictor]], fill = CRF)) +
+      geom_bar(position = "fill") +
+      labs(title = paste("Stacked bar plot of", predictor, "vs CRF"),
+           x = predictor, y = "Proportion", fill = "CRF") +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    # Calculate Cramer's V
+    contingency_table <- table(df_clean[[predictor]], df_clean$CRF)
+    chi_sq <- chisq.test(contingency_table)
+    cramer_v <- sqrt(chi_sq$statistic / (sum(contingency_table) * (min(dim(contingency_table)) - 1)))
+    cor_metric <- paste("Cramer's V -", predictor, ":", round(cramer_v, 3))
+  }
+  
+  # Print the plot and correlation metric
+  print(p)
+  print(cor_metric)
+  
+  # Return the correlation metric
+  return(cor_metric)
+}
+
+# Create plots and calculate correlations for all predictors
+correlation_results <- map(predictors, safely(plot_and_correlate), df = df)
+
+# Extract successful results and errors
+successful_results <- correlation_results %>% 
+  map("result") %>% 
+  compact()
+
+errors <- correlation_results %>% 
+  map("error") %>% 
+  compact()
+
+# Print any errors that occurred
+if (length(errors) > 0) {
+  cat("\nErrors occurred for the following predictors:\n")
+  for (i in seq_along(errors)) {
+    cat(names(errors)[i], ": ", as.character(errors[[i]]), "\n")
+  }
+}
+```
+
+## Calculate baseline performance
+
+```{r}
+# total row count in train set
+n <- nrow(df)
+```
+
+```{r}
+# Calculate proportion of positives in data
+    # YES = has been diagnosed with chronic risk factor
+
+RF <- sum(df$CRF == 1, na.rm = TRUE)
+NoRF <- sum(df$CRF == 0, na.rm = TRUE)
+propRF <- round(RF / n, 3)
+propNoRF <- 1 - propRF # no missing data for this variable
+
+print(paste('# with risk factor Dx: ', RF))
+print(paste('# without risk factor Dx: ', NoRF))
+print(paste('% with risk factor Dx: ', propRF))
+print(paste('% without risk factor Dx: ', propNoRF))
+```
+
+```{r}
+# Confusion matrix and accuracy for classifier that always predicts 1
+
+# Convert always-positive predictions to factor
+predictions <- rep(1, n)
+predictions <- factor(predictions, levels = c(1,0))
+
+cat("Confusion Matrix:\n")
+print(confusionMatrix(predictions, df$CRF))
+
+# calculate accuracy
+TP <- RF
+TN <- 0
+acc <- (TP + TN) / n
+print(paste('Baseline accuracy: ', acc))
+```
+
+## Cross-validation
+
+```{r}
+# Create folds to use for evaluation of all three modeling strategies
+set.seed(123)  # for reproducibility
+k <- 5  # number of folds
+folds <- createFolds(df$CRF, k = k, list = TRUE, returnTrain = FALSE)
+```
+
+## Strategy 1: Logistic Regression with all covariates
+
+```{r}
+# Create the formula
+formula <- as.formula(paste(outcome, "~", paste(predictors, collapse = "+")))
+```
+
+```{r}
+# 5-fold CV
+k <- 5
+
+# Initialize vectors to store performance metrics
+accuracies <- numeric(k)
+sensitivities <- numeric(k)
+specificities <- numeric(k)
+
+# Perform k-fold cross-validation
+for (i in 1:k) {
+  # Split data into training and testing sets
+  test_indices <- folds[[i]]
+  train_data <- df[-test_indices, ]
+  test_data <- df[test_indices, ]
+  
+  # Fit logistic regression model
+  model <- glm(formula = formula, data = train_data, family = "binomial")
+  
+  # Make predictions on test data
+  predictions <- predict(model, newdata = test_data, type = "response")
+  predicted_classes <- ifelse(predictions > 0.5, 1, 0) # default threshold = 0.5
+  
+  # Calculate performance metrics
+  confusion_matrix <- table(test_data$CRF, predicted_classes)
+  accuracies[i] <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  sensitivities[i] <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+  specificities[i] <- confusion_matrix[1, 1] / sum(confusion_matrix[1, ])
+  
+}
+
+# Calculate average performance metrics
+mean_accuracy <- mean(accuracies)
+mean_sensitivity <- mean(sensitivities)
+mean_specificity <- mean(specificities)
+
+# Print results
+cat("Logistic regression performance:", "\n")
+cat("Mean Accuracy:", mean_accuracy, "\n")
+cat("Mean Sensitivity:", mean_sensitivity, "\n")
+cat("Mean Specificity:", mean_specificity, "\n")
+```
+
+```{r}
+# Fit the logistic regression model on the entire train set
+model <- glm(formula = formula, data = df, family = binomial())
+
+# View model summary
+summary(model)
+```
+
+## Strategy 2: k-NN
+
+```{r}
+# use 5-fold CV to determine best number of neighbors and estimate prediction accuracy
+k <- 5
+
+# Search for best number of neighbors to use in k-NN:
+# Define range of n_neighbors to test
+n_neighbors_range <- c(1, 5, 10, 50, 100, 300)
+
+# Initialize matrix to store performance metrics for each n_neighbors
+performance_matrix <- matrix(nrow = length(n_neighbors_range), ncol = 2)
+colnames(performance_matrix) <- c("n_neighbors", "mean_accuracy")
+
+
+# Outer loop for different n_neighbors values
+for (n in seq_along(n_neighbors_range)) {
+  n_neighbors <- n_neighbors_range[n]
+  
+  # Initialize vector to store accuracies for each fold
+  accuracies <- numeric(k)
+  
+  # Perform k-fold cross-validation
+  for (i in 1:k) {
+    # Split data into training and testing sets
+    test_indices <- folds[[i]]
+    train_data <- df[-test_indices, ]
+    test_data <- df[test_indices, ]
+    
+    # Separate features and outcome
+    train_features <- train_data[, !names(train_data) %in% "CRF"]
+    train_outcome <- train_data$CRF
+    test_features <- test_data[, !names(test_data) %in% "CRF"]
+    test_outcome <- test_data$CRF
+    
+    # Create dummy variables for categorical predictors
+    dummy <- dummyVars(" ~ .", data = train_features)
+    train_dummy <- predict(dummy, newdata = train_features)
+    test_dummy <- predict(dummy, newdata = test_features)
+    
+    # Normalize numeric features
+    preProc <- preProcess(train_dummy, method = c("center", "scale"))
+    train_norm <- predict(preProc, train_dummy)
+    test_norm <- predict(preProc, test_dummy)
+    
+    # Fit k-NN model and make predictions
+    predictions <- knn(train = train_norm, test = test_norm, cl = train_outcome, k = n_neighbors)
+    
+    # Calculate accuracy
+    accuracies[i] <- sum(predictions == test_outcome) / length(test_outcome)
+  }
+  
+  # Store average accuracy for current n_neighbors
+  performance_matrix[n, ] <- c(n_neighbors, mean(accuracies))
+}
+
+
+# Find the best n_neighbors based on mean accuracy
+best_index <- which.max(performance_matrix[, "mean_accuracy"])
+best_n_neighbors <- performance_matrix[best_index, "n_neighbors"]
+best_accuracy <- performance_matrix[best_index, "mean_accuracy"]
+
+# Print results
+cat("Best n_neighbors:", best_n_neighbors, "\n")
+cat("Best Mean Accuracy:", best_accuracy, "\n")
+
+# Plot performance metric
+plot(performance_matrix[, "n_neighbors"], performance_matrix[, "mean_accuracy"], 
+     type = "l", col = "blue", xlab = "Number of Neighbors", ylab = "Mean Accuracy",
+     main = "k-NN Performance vs Number of Neighbors")
+
+
+```
+
+## Strategy 3: Random Forests
+
+```{r}
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Define the number of folds for cross-validation
+k <- 5
+
+# Initialize a vector to store performance metrics
+accuracies <- numeric(k)
+
+# Perform k-fold cross-validation
+for (i in 1:k) {
+  
+  # Split data into training and testing sets
+  test_indices <- folds[[i]]
+  train_data <- df[-test_indices, , drop = FALSE]
+  test_data <- df[test_indices, , drop = FALSE]
+    
+  # Separate features and outcome
+  train_features <- train_data[, !names(train_data) %in% "CRF", drop = FALSE]
+  train_outcome <- train_data$CRF
+  test_features <- test_data[, !names(test_data) %in% "CRF", drop = FALSE]
+  test_outcome <- test_data$CRF
+    
+  # Train the random forest model
+  rf_model <- randomForest(train_features, train_outcome, ntree=100, importance=TRUE)
+  
+  # Make predictions on the validation set
+  predictions <- predict(rf_model, newdata = test_data)
+  
+  # Calculate accuracy for this fold
+  accuracies[i] <- sum(predictions == test_data$CRF) / nrow(test_data)
+}
+
+# Calculate and print the mean accuracy across all folds
+mean_accuracy <- mean(accuracies)
+cat("Random Forest mean accuracy:", mean_accuracy, "\n")
+
+# Train a final model on the entire dataset
+final_model <- randomForest(df[predictors], df$CDF, ntree=100, importance=TRUE)
+
+# Print the final model summary
+print(final_model)
+
+# Plot variable importance
+varImpPlot(final_model)
+```
