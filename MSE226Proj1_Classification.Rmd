@@ -192,9 +192,9 @@ create_scatterplot_matrix <- function(df, column_list) {
       axis.text.y = element_text(size = 10),
       strip.text = element_text(size = 12)
     )
-  
+
   # Save the plot as a large image (e.g., PNG or PDF)
-  ggsave("scatterplot_matrix.png", plot = p, width = 16, height = 12, dpi = 300)
+  ggsave("scatterplot_matrix1.png", plot = p, width = 16, height = 12, dpi = 300)
 }
 
 # Use covariates previously determined to be most strongly correlated with CRF
