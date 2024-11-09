@@ -24,6 +24,8 @@ library(randomForest)
 library(ggplot2)
 library(purrr)
 library(broom)
+library(stringr)
+library(GGally)
 ```
 
 ```{r}
@@ -109,6 +111,7 @@ predictors <- names(df)[names(df) != "CRF"]
 ## Assess correlations
 
 ```{r}
+# Analyze correlations between CRF outcomes and each covariate
 
 # Function to create plot and calculate correlation
 plot_and_correlate <- function(predictor, df) {
@@ -135,7 +138,8 @@ plot_and_correlate <- function(predictor, df) {
       geom_bar(position = "fill") +
       labs(title = paste("Stacked bar plot of", predictor, "vs CRF"),
            x = predictor, y = "Proportion", fill = "CRF") +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+      theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+      scale_x_discrete(labels = function(x) str_wrap(x, width = 15))
     
     # Calculate Cramer's V
     contingency_table <- table(df_clean[[predictor]], df_clean$CRF)
@@ -171,6 +175,32 @@ if (length(errors) > 0) {
     cat(names(errors)[i], ": ", as.character(errors[[i]]), "\n")
   }
 }
+```
+
+```{r}
+# Analyze correlations between the covariates most strongly correlated with CRF outcome
+
+# Create a scatterplot matrix using ggpairs
+create_scatterplot_matrix <- function(df, column_list) {
+  # Subset the dataframe to only include the selected columns
+  df_subset <- df[, column_list]
+  
+# Create a scatterplot matrix using ggpairs
+  p <- ggpairs(df_subset) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+      axis.text.y = element_text(size = 10),
+      strip.text = element_text(size = 12)
+    )
+  
+  # Save the plot as a large image (e.g., PNG or PDF)
+  ggsave("scatterplot_matrix.png", plot = p, width = 16, height = 12, dpi = 300)
+}
+
+# Use covariates previously determined to be most strongly correlated with CRF
+columns_to_plot <- c("age", "marital_status", "bmi", "disability_status", "medicare_coverage", "current_insurance_type")
+create_scatterplot_matrix(df, columns_to_plot)
+
 ```
 
 ## Calculate baseline performance
