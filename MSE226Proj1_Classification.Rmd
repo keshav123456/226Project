@@ -108,6 +108,11 @@ outcome <- "CRF"
 predictors <- names(df)[names(df) != "CRF"]
 ```
 
+```{r}
+# Export cleaned train data for project part 2
+write.csv(df, "train_clean.csv", row.names = FALSE)
+```
+
 ## Assess correlations
 
 ```{r}
