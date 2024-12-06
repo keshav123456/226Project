@@ -1,0 +1,196 @@
+---
+title: "MSE226_Project2"
+output: pdf_document
+date: "2024-11-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load and clean test data
+
+```{r}
+# Load required libraries
+library(dplyr)
+library(readr)
+
+```
+
+```{r}
+# Load test data
+test <- read.csv("~/Downloads/test.csv", header = TRUE, sep = ",", check.names = FALSE)
+#View(test)
+```
+
+```{r}
+# Store long col names
+long_colnames <- names(test)
+#print(long_colnames)
+```
+
+```{r}
+# Shorten col names
+names(test) <- c(
+  "age",
+  "gender",
+  "transgender",
+  "race_ethnicity",
+  "marital_status",
+  "CRF",
+  "phys_activity_past_week",
+  "sweet_drinks_past_month",
+  "fruit_past_month",
+  "veg_past_month",
+  "tobacco_past_30days",
+  "cigarettes_per_day",
+  "binge_drinking_past_30days",
+  "bmi",
+  "drug_use",
+  "psych_distress_score",
+  "disability_status",
+  "pregnant",
+  "medicare_coverage",
+  "medical_coverage",
+  "insured",
+  "insurance_type_under65",
+  "insurance_type_over65",
+  "zipcode_type",
+  "doctor_visits_past_year",
+  "insurance_months_past_year",
+  "poverty_level_fpl"
+)
+
+#print(names(test))
+
+```
+
+```{r}
+# Convert CRF 'yes'/'no' to 1/0
+test$CRF <- ifelse(test$CRF == "YES", 1, 0)
+
+# combine 'type of insurance' columns (reported in separate columns for <65 and >=65 yrs) and delete original cols
+test$current_insurance_type <- ifelse(
+    test$insurance_type_under65 == 'SKIPPED - AGE >= 65',
+    test$insurance_type_over65, 
+    test$insurance_type_under65)
+test <- test %>% select(-insurance_type_under65, -insurance_type_over65)
+
+# remove continuous outcome variable from df
+test <- test %>% select(-doctor_visits_past_year)
+
+# Convert all categorical predictor variables to factors
+test[] <- lapply(test, function(x) if (is.character(x)) factor(x) else x)
+#str(df) # Check the structure of the dataframe
+
+# Convert outcome to factor
+test$CRF <- factor(test$CRF, levels = c(0,1))
+
+# Specify the binary outcome variable and predictor variables
+outcome <- "CRF"
+# exclude outcome variable from predictors
+predictors <- names(test)[names(test) != "CRF"]
+```
+
+```{r}
+# Export cleaned test data as csv
+write.csv(test, "test_clean.csv", row.names = FALSE)
+```
+
+```{r}
+# total row count in train set
+n <- nrow(test)
+```
+
+## Load training data and selected model (logistic regression)
+
+```{r}
+# Import cleaned train data
+train <- read_csv("train_clean.csv", show_col_types = FALSE)
+
+# Convert outcome to factor
+train$CRF <- factor(train$CRF, levels = c(0,1))
+
+#head(train)
+```
+
+```{r}
+# Run/store results of logistic regression model with all covariates
+
+# Create the formula
+formula <- as.formula(paste(outcome, "~", paste(predictors, collapse = "+")))
+
+# Fit the logistic regression model on the entire train set
+LRmodel <- glm(formula = formula, data = train, family = binomial())
+
+# View model summary
+summary(LRmodel)
+```
+
+## 1. Predict on holdout set
+
+```{r}
+## Run logistic regression model with all covariates on test set.
+
+# Make predictions on test data
+predictions <- predict(LRmodel, newdata = test, type = "response")
+predicted_classes <- ifelse(predictions > 0.5, 1, 0) # default threshold = 0.5
+
+# Calculate performance metrics
+confusion_matrix <- table(test$CRF, predicted_classes)
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste('Accuracy of logistic regression model on test set = ', accuracy))
+```
+
+## 2. Inference
+
+### 2d. Confidence intervals
+
+```{r}
+# Standard log reg
+
+# Calculate 95% confidence intervals
+conf_intervals <- confint(LRmodel, level = 0.95)
+print(conf_intervals)
+```
+
+```{r}
+# Bootstrap
+B <- 10000 # number of bootstrap samples
+
+# Initialize a list to store the coefficients
+coef_list <- vector("list", B)
+
+set.seed(123)
+# Perform the sampling and modeling 10000 times
+for (i in 1:B) {
+  # Draw a random sample of size n with replacement
+  sample_data <- train[sample(nrow(train), n, replace = TRUE), ]
+  
+  # Fit a logistic regression model
+  Bmodel <- glm(formula = formula, data = sample_data, family = binomial)
+  
+  # Store the coefficients
+  coef_list[[i]] <- coef(Bmodel)
+}
+
+# Convert the list of coefficients to a dataframe
+coef_df <- do.call(rbind, coef_list)
+
+```
+
+```{r}
+# Bootstrap
+# Get 2.5% and 97.5% quantiles from each coefficient for 95% confidence intervals
+
+# Calculate the 2.5th and 97.5th percentiles for each coefficient
+percentiles <- apply(coef_df, 2, function(x) quantile(x, probs = c(0.025, 0.975), na.rm = TRUE))
+
+# Convert the result to a dataframe
+percentiles_df <- as.data.frame(t(percentiles))
+
+# Display the results
+print(percentiles_df)
+```
+
+### 
